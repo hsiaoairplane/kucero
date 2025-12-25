@@ -1,4 +1,4 @@
-FROM golang:1.24-bookworm as build
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 
 ARG VERSION=latest

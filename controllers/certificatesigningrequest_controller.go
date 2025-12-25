@@ -27,14 +27,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/sirupsen/logrus"
-	velerodiscovery "github.com/vmware-tanzu/velero/pkg/discovery"
 
 	"github.com/jenting/kucero/pkg/pki/cert"
 	"github.com/jenting/kucero/pkg/pki/signer"
@@ -172,28 +170,31 @@ func appendApprovalCondition(csr *capi.CertificateSigningRequest, message string
 }
 
 func (r *CertificateSigningRequestSigningReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	discoveryHelper, err := velerodiscovery.NewHelper(r.ClientSet.Discovery(), &logrus.Logger{})
-	if err != nil {
-		return err
-	}
-	gvr, _, err := discoveryHelper.ResourceFor(schema.GroupVersionResource{
-		Group:    "certificates.k8s.io",
-		Resource: "CertificateSigningRequest",
-	})
-	if err != nil {
-		return err
+	discoveryClient := r.ClientSet.Discovery()
+
+	// Query API server for certificates.k8s.io
+	apiGroup, err := discoveryClient.ServerResourcesForGroupVersion("certificates.k8s.io/v1")
+	if err == nil {
+		for _, res := range apiGroup.APIResources {
+			if res.Name == "certificatesigningrequests" {
+				return ctrl.NewControllerManagedBy(mgr).
+					For(&capi.CertificateSigningRequest{}).
+					Complete(r)
+			}
+		}
 	}
 
-	switch gvr.Version {
-	case "v1beta1":
-		return ctrl.NewControllerManagedBy(mgr).
-			For(&capiv1beta1.CertificateSigningRequest{}).
-			Complete(r)
-	case "v1":
-		return ctrl.NewControllerManagedBy(mgr).
-			For(&capi.CertificateSigningRequest{}).
-			Complete(r)
-	default:
-		return fmt.Errorf("unsupported certificates.k8s.io/%s", gvr.Version)
+	// Fallback to v1beta1
+	apiGroup, err = discoveryClient.ServerResourcesForGroupVersion("certificates.k8s.io/v1beta1")
+	if err == nil {
+		for _, res := range apiGroup.APIResources {
+			if res.Name == "certificatesigningrequests" {
+				return ctrl.NewControllerManagedBy(mgr).
+					For(&capiv1beta1.CertificateSigningRequest{}).
+					Complete(r)
+			}
+		}
 	}
+
+	return fmt.Errorf("unsupported certificates.k8s.io API version")
 }
