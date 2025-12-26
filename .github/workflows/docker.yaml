@@ -1,0 +1,104 @@
+name: Docker
+run-name: "${{ inputs.releaseVersion }}"
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        type: string
+        description: Version of the image to push
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+  checks: write
+  statuses: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set tag name
+        run: |
+          echo "TAG_NAME=dev" >> $GITHUB_ENV
+
+      - name: Set release tag name
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG_NAME=${{ github.event.inputs.releaseVersion }}
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ env.TAG_NAME }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.TAG_NAME }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Export digest
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Create manifest list and push
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      - name: Inspect image
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
+
+      - name: Create Release
+        id: create_release
+        uses: ncipollo/release-action@v1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: ${{ github.event.inputs.releaseVersion }}
+          generateReleaseNotes: true
+          commit: ${{ github.sha }}
+          tag: ${{ github.event.inputs.releaseVersion }}
+          makeLatest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
