@@ -3,7 +3,7 @@ module github.com/jenting/kucero
 go 1.25.0
 
 require (
-	github.com/sirupsen/logrus v1.9.3
+	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/weaveworks/kured v0.0.0-20220810042013-9d4ebfc1f82a
 	k8s.io/api v0.35.0
