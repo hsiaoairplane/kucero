@@ -18,6 +18,7 @@ package kubeadm
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -31,14 +32,78 @@ import (
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
 
+// inClusterKubeconfigPath is the path where the in-cluster kubeconfig is written
+// for kubeadm to use in unprivileged mode.
+const inClusterKubeconfigPath = "/tmp/kucero-kubeadm-kubeconfig.yaml"
+
+// buildInClusterKubeconfig writes a kubeconfig to inClusterKubeconfigPath using
+// the pod's service account credentials. This is needed in unprivileged mode
+// because admin.conf typically points to 127.0.0.1 which is the Kubernetes node's
+// loopback — not reachable from inside a pod. Returns the path on success.
+func buildInClusterKubeconfig() (string, error) {
+	const tokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	const caFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+	token, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read service account token: %w", err)
+	}
+
+	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
+	apiPort := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if apiHost == "" || apiPort == "" {
+		return "", fmt.Errorf("KUBERNETES_SERVICE_HOST or KUBERNETES_SERVICE_PORT not set")
+	}
+
+	// Wrap IPv6 addresses in brackets.
+	server := fmt.Sprintf("https://%s:%s", apiHost, apiPort)
+	if strings.Contains(apiHost, ":") {
+		server = fmt.Sprintf("https://[%s]:%s", apiHost, apiPort)
+	}
+
+	kubeconfig := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority: %s
+    server: %s
+  name: in-cluster
+contexts:
+- context:
+    cluster: in-cluster
+    user: kucero
+  name: kucero
+current-context: kucero
+users:
+- name: kucero
+  user:
+    token: %s
+`, caFile, server, strings.TrimSpace(string(token)))
+
+	if err := os.WriteFile(inClusterKubeconfigPath, []byte(kubeconfig), 0600); err != nil {
+		return "", fmt.Errorf("write in-cluster kubeconfig: %w", err)
+	}
+
+	return inClusterKubeconfigPath, nil
+}
+
 // newKubeadmCmd returns a command that runs kubeadm with the given arguments.
-// In unprivileged mode the binary is called directly; otherwise nsenter is
-// used to enter the host mount namespace.
+// In unprivileged mode the binary is called directly with an in-cluster
+// kubeconfig; otherwise nsenter is used to enter the host mount namespace.
 func newKubeadmCmd(arg ...string) *exec.Cmd {
 	if host.IsUnprivileged() {
 		// In unprivileged mode, kubeadm and the certificate paths are accessed
 		// directly via host volume mounts instead of entering the host mount namespace.
-		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+		// Pass --kubeconfig pointing to an in-cluster kubeconfig so kubeadm can
+		// reach the API server from inside the pod (admin.conf uses 127.0.0.1
+		// which is only reachable on the Kubernetes node, not from pod network).
+		fullArgs := arg
+		if kubeconfigPath, err := buildInClusterKubeconfig(); err == nil {
+			fullArgs = append([]string{"--kubeconfig", kubeconfigPath}, arg...)
+		} else {
+			logrus.Errorf("Could not build in-cluster kubeconfig for kubeadm: %v", err)
+		}
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", fullArgs...)
 	}
 	// Relies on hostPID:true and privileged:true to enter host mount space
 	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
