@@ -16,18 +16,20 @@ limitations under the License.
 
 package host
 
-import "github.com/sirupsen/logrus"
+import (
+	"github.com/sirupsen/logrus"
+)
 
 // RestartKubelet executes `systemctl restart kubelet`
 // on the host system
 func RestartKubelet(nodeName string) error {
 	logrus.Infof("Commanding restart kubelet on %s node", nodeName)
 
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := NewCommand("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/systemctl", "restart", "kubelet")
+	// The D-Bus socket must be accessible in the container (e.g. /run/dbus mounted from host).
+	cmd := NewCommand("/usr/bin/systemctl", "restart", "kubelet")
 	err := cmd.Run()
 	if err != nil {
-		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
+		logrus.Errorf("Error invoking restart kubelet: %v", err)
 	}
 
 	return err

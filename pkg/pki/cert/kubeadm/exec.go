@@ -17,12 +17,18 @@ limitations under the License.
 package kubeadm
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/sirupsen/logrus"
 
@@ -30,13 +36,71 @@ import (
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
 
+// kubeadmConfigPath is where the kubeadm ClusterConfiguration is written for
+// use with kubeadm --config.
+const kubeadmConfigPath = "/tmp/kucero-kubeadm-config.yaml"
+
+// fetchAndWriteKubeadmConfig fetches the ClusterConfiguration from the
+// kubeadm-config ConfigMap using the pod's in-cluster service account and
+// writes it to kubeadmConfigPath. Passing --config to kubeadm cert commands
+// makes kubeadm operate fully offline — it reads cert files and CA keys from
+// the local filesystem without connecting to the API server.
+func fetchAndWriteKubeadmConfig() (string, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return "", fmt.Errorf("build in-cluster config: %w", err)
+	}
+
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("create kubernetes client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cm, err := client.CoreV1().ConfigMaps("kube-system").Get(
+		ctx, "kubeadm-config", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get kubeadm-config ConfigMap: %w", err)
+	}
+
+	data, ok := cm.Data["ClusterConfiguration"]
+	if !ok {
+		return "", fmt.Errorf("ClusterConfiguration not found in kubeadm-config ConfigMap")
+	}
+
+	if err := os.WriteFile(kubeadmConfigPath, []byte(data), 0600); err != nil {
+		return "", fmt.Errorf("write kubeadm config: %w", err)
+	}
+
+	return kubeadmConfigPath, nil
+}
+
+// newKubeadmCmd returns a command that runs kubeadm with the given arguments.
+func newKubeadmCmd(arg ...string) *exec.Cmd {
+	return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+}
+
+// newKubeadmCertsCmd returns a kubeadm command for certificate operations.
+// It fetches the kubeadm ClusterConfiguration from the kubeadm-config ConfigMap
+// and appends --config so kubeadm can check and renew certificates without
+// connecting to the API server.
+func newKubeadmCertsCmd(arg ...string) *exec.Cmd {
+	if cfgPath, err := fetchAndWriteKubeadmConfig(); err == nil {
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", append(arg, "--config", cfgPath)...)
+	} else {
+		logrus.Errorf("Could not fetch kubeadm cluster config: %v", err)
+	}
+	return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+}
+
 // kubeadmAlphaCertsCheckExpiration executes `kubeadm alpha certs check-expiration`
 // returns the certificates which are going to expires
 func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock clock.Clock) ([]string, error) {
 	expiryCertificates := []string{}
 
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "version", "-oshort")
+	cmd := newKubeadmCmd("version", "-oshort")
 	out, err := cmd.Output()
 	if err != nil {
 		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
@@ -47,9 +111,9 @@ func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock cl
 	// otherwise: kubeadm alpha certs check-expiration
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "certs", "check-expiration")
+		cmd = newKubeadmCertsCmd("certs", "check-expiration")
 	} else {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "alpha", "certs", "check-expiration")
+		cmd = newKubeadmCertsCmd("alpha", "certs", "check-expiration")
 	}
 	stdout, err := cmd.Output()
 	if err != nil {
@@ -70,8 +134,7 @@ func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock cl
 }
 
 func kubeadmAlphaCertsRenew(certificateName, certificatePath string) error {
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "version", "-oshort")
+	cmd := newKubeadmCmd("version", "-oshort")
 	out, err := cmd.Output()
 	if err != nil {
 		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
@@ -82,9 +145,9 @@ func kubeadmAlphaCertsRenew(certificateName, certificatePath string) error {
 	// otherwise: kubeadm alpha certs renew <certificate-name>
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "certs", "renew", certificateName)
+		cmd = newKubeadmCertsCmd("certs", "renew", certificateName)
 	} else {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "alpha", "certs", "renew", certificateName)
+		cmd = newKubeadmCertsCmd("alpha", "certs", "renew", certificateName)
 	}
 	return cmd.Run()
 }
