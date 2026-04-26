@@ -4,8 +4,11 @@ set -o pipefail
 set -e
 
 IMG=$1
+CLUSTER_NAME=${2:-kind}
 
 clean_up() {
+	(cd manifest && kustomize create --autodetect 2>/dev/null || true)
+	kustomize build manifest | kubectl --context kind-${CLUSTER_NAME} delete -f - 2>/dev/null || true
 	[ -f manifest/kustomization.yaml ] && rm manifest/kustomization.yaml
 }
 
@@ -31,22 +34,23 @@ if ! command -v kubectl; then
     exit 1
 fi
 
-# Create KIND cluster
-COUNT=`kind get clusters | wc -l`
-if [ $COUNT -eq 0 ]; then
-	kind create cluster
+# Create KIND cluster if it does not already exist
+if ! kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
+	kind create cluster --name ${CLUSTER_NAME}
 fi
 
-# Find KIND cluster
-TAG=`docker ps | grep "kindest/node" | awk '{ print $1 }'`
+# Find KIND cluster control-plane container by cluster label
+TAG=$(docker ps --filter "label=io.x-k8s.kind.cluster=${CLUSTER_NAME}" --filter "label=io.x-k8s.kind.role=control-plane" --format "{{.ID}}")
+if [ -z "${TAG}" ]; then
+    echo "ERROR: could not find control-plane container for KIND cluster '${CLUSTER_NAME}'"
+    exit 1
+fi
 
 # Load docker image into KIND cluster
-kind load docker-image ${IMG}
+kind load docker-image ${IMG} --name ${CLUSTER_NAME}
 
 # Generate kustomization.yaml
-cd manifest
-kustomize create --autodetect || true
-cd -
+(cd manifest && kustomize create --autodetect || true)
 
 # Apply kustomize patch
 cat << EOF >> manifest/kustomization.yaml
@@ -71,7 +75,7 @@ patchesStrategicMerge:
           - --enable-kubelet-csr-controller=true
           - --enable-kubelet-server-cert-rotation=false
 EOF
-kustomize build manifest | kubectl apply -f -
+kustomize build manifest | kubectl --context kind-${CLUSTER_NAME} apply -f -
 
 APISERVER_ETCD_CLIENT_WAS=`docker exec -t ${TAG} openssl x509 -in /etc/kubernetes/pki/apiserver-etcd-client.crt -nocert -enddate | awk -F'=' '{print $2}'`
 APISERVER_KUBELET_CLIENT_WAS=`docker exec -t ${TAG} openssl x509 -in /etc/kubernetes/pki/apiserver-kubelet-client.crt -nocert -enddate | awk -F'=' '{print $2}'`
@@ -81,7 +85,7 @@ ETCD_HEALTHCHECK_CLIENT_WAS=`docker exec -t ${TAG} openssl x509 -in /etc/kuberne
 ETCD_PEER_WAS=`docker exec -t ${TAG} openssl x509 -in /etc/kubernetes/pki/etcd/peer.crt -nocert -enddate | awk -F'=' '{print $2}'`
 ETCD_SERVER_WAS=`docker exec -t ${TAG} openssl x509 -in /etc/kubernetes/pki/etcd/server.crt -nocert -enddate | awk -F'=' '{print $2}'`
 
-kubectl wait pods --for=condition=ready -n kube-system --all --timeout=3m
+kubectl --context kind-${CLUSTER_NAME} wait pods --for=condition=ready -n kube-system --all --timeout=3m
 sleep 3m
 
 APISERVER_ETCD_CLIENT_IS=`docker exec -t ${TAG} openssl x509 -in /etc/kubernetes/pki/apiserver-etcd-client.crt -nocert -enddate | awk -F'=' '{print $2}'`
