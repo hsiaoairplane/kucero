@@ -18,6 +18,8 @@ package kubeadm
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -106,15 +108,50 @@ func backupCertificate(nodeName string, certificateName, certificatePath string)
 	ext := filepath.Ext(certificatePath)
 	certificateBackupPath := filepath.Join(dir, strings.TrimSuffix(base, ext)+"-"+time.Now().Format("20060102030405")+ext+".bak")
 
+	if host.IsUnprivileged() {
+		// In unprivileged mode, use Go native file copy instead of nsenter+cp.
+		// The certificate paths are accessible directly via host volume mounts.
+		return copyFile(certificatePath, certificateBackupPath)
+	}
+
 	// Relies on hostPID:true and privileged:true to enter host mount space
-	var err error
 	cmd := host.NewCommand("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/cp", certificatePath, certificateBackupPath)
-	err = cmd.Run()
+	err := cmd.Run()
 	if err != nil {
 		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
 	}
 
 	return err
+}
+
+// copyFile copies the file at src to dst using Go standard library I/O.
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", src, err)
+	}
+	defer srcFile.Close()
+
+	srcInfo, err := srcFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat source file %s: %w", src, err)
+	}
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, srcInfo.Mode())
+	if err != nil {
+		return fmt.Errorf("failed to create destination file %s: %w", dst, err)
+	}
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		dstFile.Close()
+		return fmt.Errorf("failed to copy %s to %s: %w", src, dst, err)
+	}
+
+	if err := dstFile.Close(); err != nil {
+		return fmt.Errorf("failed to close destination file %s: %w", dst, err)
+	}
+
+	return nil
 }
 
 // rotateCertificate calls `kubeadm alpha certs renew <cert-name>`

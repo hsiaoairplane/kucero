@@ -18,6 +18,7 @@ package kubeadm
 
 import (
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -30,13 +31,25 @@ import (
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
 
+// newKubeadmCmd returns a command that runs kubeadm with the given arguments.
+// In unprivileged mode the binary is called directly; otherwise nsenter is
+// used to enter the host mount namespace.
+func newKubeadmCmd(arg ...string) *exec.Cmd {
+	if host.IsUnprivileged() {
+		// In unprivileged mode, kubeadm and the certificate paths are accessed
+		// directly via host volume mounts instead of entering the host mount namespace.
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+	}
+	// Relies on hostPID:true and privileged:true to enter host mount space
+	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
+}
+
 // kubeadmAlphaCertsCheckExpiration executes `kubeadm alpha certs check-expiration`
 // returns the certificates which are going to expires
 func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock clock.Clock) ([]string, error) {
 	expiryCertificates := []string{}
 
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "version", "-oshort")
+	cmd := newKubeadmCmd("version", "-oshort")
 	out, err := cmd.Output()
 	if err != nil {
 		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
@@ -47,9 +60,9 @@ func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock cl
 	// otherwise: kubeadm alpha certs check-expiration
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "certs", "check-expiration")
+		cmd = newKubeadmCmd("certs", "check-expiration")
 	} else {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "alpha", "certs", "check-expiration")
+		cmd = newKubeadmCmd("alpha", "certs", "check-expiration")
 	}
 	stdout, err := cmd.Output()
 	if err != nil {
@@ -70,8 +83,7 @@ func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock cl
 }
 
 func kubeadmAlphaCertsRenew(certificateName, certificatePath string) error {
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "version", "-oshort")
+	cmd := newKubeadmCmd("version", "-oshort")
 	out, err := cmd.Output()
 	if err != nil {
 		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
@@ -82,9 +94,9 @@ func kubeadmAlphaCertsRenew(certificateName, certificatePath string) error {
 	// otherwise: kubeadm alpha certs renew <certificate-name>
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "certs", "renew", certificateName)
+		cmd = newKubeadmCmd("certs", "renew", certificateName)
 	} else {
-		cmd = host.NewCommandWithStdout("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/kubeadm", "alpha", "certs", "renew", certificateName)
+		cmd = newKubeadmCmd("alpha", "certs", "renew", certificateName)
 	}
 	return cmd.Run()
 }
