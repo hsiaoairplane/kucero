@@ -32,10 +32,10 @@ verify:
 test: verify
 	go test -count=1 ./...
 
+CLUSTER_NAME ?= kind
+
 e2e-test: docker-build
-	bash +x ./integration/test.sh ${IMG}
-	cd manifest && kustomize create --autodetect 2>/dev/null || true
-	kustomize build manifest | kubectl delete -f -
+	bash +x ./integration/test.sh ${IMG} ${CLUSTER_NAME}
 
 kucero: test
 	CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(VERSION)" -o cmd/kucero/kucero cmd/kucero/*.go
