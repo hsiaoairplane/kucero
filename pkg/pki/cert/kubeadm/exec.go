@@ -17,6 +17,7 @@ limitations under the License.
 package kubeadm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +25,10 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/sirupsen/logrus"
 
@@ -32,66 +36,70 @@ import (
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
 
-// patchedAdminKubeconfigPath is where the patched admin.conf is written for
-// kubeadm in unprivileged mode.
-const patchedAdminKubeconfigPath = "/tmp/kucero-admin.conf"
+// kubeadmConfigPath is where the kubeadm ClusterConfiguration is written for
+// use with kubeadm --config in unprivileged mode.
+const kubeadmConfigPath = "/tmp/kucero-kubeadm-config.yaml"
 
-// serverURLRe matches the `server: https://...` line in a kubeconfig file.
-var serverURLRe = regexp.MustCompile(`(server:\s+)https://[^\s\n]+`)
-
-// buildPatchedAdminKubeconfig copies /etc/kubernetes/admin.conf to a temp
-// file, replacing the server URL with the in-cluster API server address.
-// This is needed in unprivileged mode because admin.conf uses 127.0.0.1
-// which is the Kubernetes node's loopback — not reachable from inside a pod.
-// Using admin credentials (not a service account token) ensures kubeadm has
-// the full RBAC permissions it needs (e.g. to read the kubeadm-config
-// ConfigMap and cluster-level resources).
-func buildPatchedAdminKubeconfig() (string, error) {
-	const adminKubeconfig = "/etc/kubernetes/admin.conf"
-
-	data, err := os.ReadFile(adminKubeconfig)
+// fetchAndWriteKubeadmConfig fetches the ClusterConfiguration from the
+// kubeadm-config ConfigMap using the pod's in-cluster service account and
+// writes it to kubeadmConfigPath. Passing --config to kubeadm cert commands
+// makes kubeadm operate fully offline — it reads cert files and CA keys from
+// the local filesystem without connecting to the API server.
+func fetchAndWriteKubeadmConfig() (string, error) {
+	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		return "", fmt.Errorf("read admin.conf: %w", err)
+		return "", fmt.Errorf("build in-cluster config: %w", err)
 	}
 
-	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
-	apiPort := os.Getenv("KUBERNETES_SERVICE_PORT")
-	if apiHost == "" || apiPort == "" {
-		return "", fmt.Errorf("KUBERNETES_SERVICE_HOST or KUBERNETES_SERVICE_PORT not set")
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("create kubernetes client: %w", err)
 	}
 
-	// Wrap IPv6 addresses in brackets.
-	server := fmt.Sprintf("https://%s:%s", apiHost, apiPort)
-	if strings.Contains(apiHost, ":") {
-		server = fmt.Sprintf("https://[%s]:%s", apiHost, apiPort)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cm, err := client.CoreV1().ConfigMaps("kube-system").Get(
+		ctx, "kubeadm-config", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get kubeadm-config ConfigMap: %w", err)
 	}
 
-	patched := serverURLRe.ReplaceAllString(string(data), "${1}"+server)
-
-	if err := os.WriteFile(patchedAdminKubeconfigPath, []byte(patched), 0600); err != nil {
-		return "", fmt.Errorf("write patched admin kubeconfig: %w", err)
+	data, ok := cm.Data["ClusterConfiguration"]
+	if !ok {
+		return "", fmt.Errorf("ClusterConfiguration not found in kubeadm-config ConfigMap")
 	}
 
-	return patchedAdminKubeconfigPath, nil
+	if err := os.WriteFile(kubeadmConfigPath, []byte(data), 0600); err != nil {
+		return "", fmt.Errorf("write kubeadm config: %w", err)
+	}
+
+	return kubeadmConfigPath, nil
 }
 
 // newKubeadmCmd returns a command that runs kubeadm with the given arguments.
-// In unprivileged mode the binary is called directly with a patched admin
-// kubeconfig; otherwise nsenter is used to enter the host mount namespace.
+// In unprivileged mode the binary is called directly; otherwise nsenter is
+// used to enter the host mount namespace.
 func newKubeadmCmd(arg ...string) *exec.Cmd {
 	if host.IsUnprivileged() {
-		// In unprivileged mode, kubeadm and the certificate paths are accessed
-		// directly via host volume mounts instead of entering the host mount namespace.
-		// Pass --kubeconfig pointing to a patched copy of admin.conf so kubeadm
-		// can reach the API server from inside the pod (admin.conf uses 127.0.0.1
-		// which is only reachable on the Kubernetes node, not from pod network).
-		fullArgs := arg
-		if kubeconfigPath, err := buildPatchedAdminKubeconfig(); err == nil {
-			fullArgs = append([]string{"--kubeconfig", kubeconfigPath}, arg...)
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+	}
+	// Relies on hostPID:true and privileged:true to enter host mount space
+	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
+}
+
+// newKubeadmCertsCmd returns a kubeadm command for certificate operations.
+// In unprivileged mode, it fetches the kubeadm ClusterConfiguration from the
+// kubeadm-config ConfigMap and appends --config so kubeadm can check and
+// renew certificates without connecting to the API server.
+func newKubeadmCertsCmd(arg ...string) *exec.Cmd {
+	if host.IsUnprivileged() {
+		if cfgPath, err := fetchAndWriteKubeadmConfig(); err == nil {
+			return host.NewCommandWithStdout("/usr/bin/kubeadm", append(arg, "--config", cfgPath)...)
 		} else {
-			logrus.Errorf("Could not build patched admin kubeconfig for kubeadm: %v", err)
+			logrus.Errorf("Could not fetch kubeadm cluster config: %v", err)
 		}
-		return host.NewCommandWithStdout("/usr/bin/kubeadm", fullArgs...)
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
 	}
 	// Relies on hostPID:true and privileged:true to enter host mount space
 	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
@@ -113,9 +121,9 @@ func kubeadmAlphaCertsCheckExpiration(expiryTimeToRotate time.Duration, clock cl
 	// otherwise: kubeadm alpha certs check-expiration
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = newKubeadmCmd("certs", "check-expiration")
+		cmd = newKubeadmCertsCmd("certs", "check-expiration")
 	} else {
-		cmd = newKubeadmCmd("alpha", "certs", "check-expiration")
+		cmd = newKubeadmCertsCmd("alpha", "certs", "check-expiration")
 	}
 	stdout, err := cmd.Output()
 	if err != nil {
@@ -147,9 +155,9 @@ func kubeadmAlphaCertsRenew(certificateName, certificatePath string) error {
 	// otherwise: kubeadm alpha certs renew <certificate-name>
 	ver := strings.TrimSuffix(string(out), "\n")
 	if version.MustParseSemantic(ver).AtLeast(version.MustParseSemantic("v1.20.0")) {
-		cmd = newKubeadmCmd("certs", "renew", certificateName)
+		cmd = newKubeadmCertsCmd("certs", "renew", certificateName)
 	} else {
-		cmd = newKubeadmCmd("alpha", "certs", "renew", certificateName)
+		cmd = newKubeadmCertsCmd("alpha", "certs", "renew", certificateName)
 	}
 	return cmd.Run()
 }
