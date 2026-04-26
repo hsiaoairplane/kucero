@@ -32,21 +32,26 @@ import (
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
 
-// inClusterKubeconfigPath is the path where the in-cluster kubeconfig is written
-// for kubeadm to use in unprivileged mode.
-const inClusterKubeconfigPath = "/tmp/kucero-kubeadm-kubeconfig.yaml"
+// patchedAdminKubeconfigPath is where the patched admin.conf is written for
+// kubeadm in unprivileged mode.
+const patchedAdminKubeconfigPath = "/tmp/kucero-admin.conf"
 
-// buildInClusterKubeconfig writes a kubeconfig to inClusterKubeconfigPath using
-// the pod's service account credentials. This is needed in unprivileged mode
-// because admin.conf typically points to 127.0.0.1 which is the Kubernetes node's
-// loopback — not reachable from inside a pod. Returns the path on success.
-func buildInClusterKubeconfig() (string, error) {
-	const tokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-	const caFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+// serverURLRe matches the `server: https://...` line in a kubeconfig file.
+var serverURLRe = regexp.MustCompile(`(server:\s+)https://[^\s\n]+`)
 
-	token, err := os.ReadFile(tokenFile)
+// buildPatchedAdminKubeconfig copies /etc/kubernetes/admin.conf to a temp
+// file, replacing the server URL with the in-cluster API server address.
+// This is needed in unprivileged mode because admin.conf uses 127.0.0.1
+// which is the Kubernetes node's loopback — not reachable from inside a pod.
+// Using admin credentials (not a service account token) ensures kubeadm has
+// the full RBAC permissions it needs (e.g. to read the kubeadm-config
+// ConfigMap and cluster-level resources).
+func buildPatchedAdminKubeconfig() (string, error) {
+	const adminKubeconfig = "/etc/kubernetes/admin.conf"
+
+	data, err := os.ReadFile(adminKubeconfig)
 	if err != nil {
-		return "", fmt.Errorf("read service account token: %w", err)
+		return "", fmt.Errorf("read admin.conf: %w", err)
 	}
 
 	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
@@ -61,47 +66,30 @@ func buildInClusterKubeconfig() (string, error) {
 		server = fmt.Sprintf("https://[%s]:%s", apiHost, apiPort)
 	}
 
-	kubeconfig := fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    certificate-authority: %s
-    server: %s
-  name: in-cluster
-contexts:
-- context:
-    cluster: in-cluster
-    user: kucero
-  name: kucero
-current-context: kucero
-users:
-- name: kucero
-  user:
-    token: %s
-`, caFile, server, strings.TrimSpace(string(token)))
+	patched := serverURLRe.ReplaceAllString(string(data), "${1}"+server)
 
-	if err := os.WriteFile(inClusterKubeconfigPath, []byte(kubeconfig), 0600); err != nil {
-		return "", fmt.Errorf("write in-cluster kubeconfig: %w", err)
+	if err := os.WriteFile(patchedAdminKubeconfigPath, []byte(patched), 0600); err != nil {
+		return "", fmt.Errorf("write patched admin kubeconfig: %w", err)
 	}
 
-	return inClusterKubeconfigPath, nil
+	return patchedAdminKubeconfigPath, nil
 }
 
 // newKubeadmCmd returns a command that runs kubeadm with the given arguments.
-// In unprivileged mode the binary is called directly with an in-cluster
+// In unprivileged mode the binary is called directly with a patched admin
 // kubeconfig; otherwise nsenter is used to enter the host mount namespace.
 func newKubeadmCmd(arg ...string) *exec.Cmd {
 	if host.IsUnprivileged() {
 		// In unprivileged mode, kubeadm and the certificate paths are accessed
 		// directly via host volume mounts instead of entering the host mount namespace.
-		// Pass --kubeconfig pointing to an in-cluster kubeconfig so kubeadm can
-		// reach the API server from inside the pod (admin.conf uses 127.0.0.1
+		// Pass --kubeconfig pointing to a patched copy of admin.conf so kubeadm
+		// can reach the API server from inside the pod (admin.conf uses 127.0.0.1
 		// which is only reachable on the Kubernetes node, not from pod network).
 		fullArgs := arg
-		if kubeconfigPath, err := buildInClusterKubeconfig(); err == nil {
+		if kubeconfigPath, err := buildPatchedAdminKubeconfig(); err == nil {
 			fullArgs = append([]string{"--kubeconfig", kubeconfigPath}, arg...)
 		} else {
-			logrus.Errorf("Could not build in-cluster kubeconfig for kubeadm: %v", err)
+			logrus.Errorf("Could not build patched admin kubeconfig for kubeadm: %v", err)
 		}
 		return host.NewCommandWithStdout("/usr/bin/kubeadm", fullArgs...)
 	}
