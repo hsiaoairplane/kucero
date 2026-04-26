@@ -20,32 +20,32 @@ spec:
         - key: node-role.kubernetes.io/master
           operator: Exists
           effect: NoSchedule
-      hostPID: true # Facilitate entering the host mount namespace via init
       restartPolicy: Always
       volumes:
-        - name: kubelet-conf
+        - name: etc-kubernetes
           hostPath:
-            path: /etc/kubernetes/kubelet.conf
+            path: /etc/kubernetes
+        - name: var-lib-kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: usr-bin-kubeadm
+          hostPath:
+            path: /usr/bin/kubeadm
             type: File
-        - name: ca-crt
+        - name: run-dbus
           hostPath:
-            path: /etc/kubernetes/pki/ca.crt
-            type: File
-        - name: ca-key
-          hostPath:
-            path: /etc/kubernetes/pki/ca.key
-            type: FileOrCreate
-        - name: kubelet-config-yaml
-          hostPath:
-            path: /var/lib/kubelet/config.yaml
-            type: File
+            path: /run/dbus
       containers:
         - name: kucero
           image: jenting/kucero:v1.6.7
           imagePullPolicy: IfNotPresent
           securityContext:
-            privileged: true # Give permission to nsenter /proc/1/ns/mnt
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
+            - name: KUCERO_UNPRIVILEGED
+              value: "true"
             # Pass in the name of the node on which this pod is scheduled
             # for use with drain/uncordon operations and lock acquisition
             - name: KUCERO_NODE_NAME
@@ -55,13 +55,12 @@ spec:
           command:
             - /usr/bin/kucero
           volumeMounts:
-            - mountPath: /etc/kubernetes/kubelet.conf
-              name: kubelet-conf
-            - mountPath: /etc/kubernetes/pki/ca.crt
-              name: ca-crt
+            - mountPath: /etc/kubernetes
+              name: etc-kubernetes
+            - mountPath: /var/lib/kubelet
+              name: var-lib-kubelet
+            - mountPath: /usr/bin/kubeadm
+              name: usr-bin-kubeadm
               readOnly: true
-            - mountPath: /etc/kubernetes/pki/ca.key
-              name: ca-key
-              readOnly: true
-            - mountPath: /var/lib/kubelet/config.yaml
-              name: kubelet-config-yaml
+            - mountPath: /run/dbus
+              name: run-dbus
