@@ -44,8 +44,6 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            - name: KUCERO_UNPRIVILEGED
-              value: "true"
             # Pass in the name of the node on which this pod is scheduled
             # for use with drain/uncordon operations and lock acquisition
             - name: KUCERO_NODE_NAME

@@ -37,7 +37,7 @@ import (
 )
 
 // kubeadmConfigPath is where the kubeadm ClusterConfiguration is written for
-// use with kubeadm --config in unprivileged mode.
+// use with kubeadm --config.
 const kubeadmConfigPath = "/tmp/kucero-kubeadm-config.yaml"
 
 // fetchAndWriteKubeadmConfig fetches the ClusterConfiguration from the
@@ -78,31 +78,21 @@ func fetchAndWriteKubeadmConfig() (string, error) {
 }
 
 // newKubeadmCmd returns a command that runs kubeadm with the given arguments.
-// In unprivileged mode the binary is called directly; otherwise nsenter is
-// used to enter the host mount namespace.
 func newKubeadmCmd(arg ...string) *exec.Cmd {
-	if host.IsUnprivileged() {
-		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
-	}
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
+	return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
 }
 
 // newKubeadmCertsCmd returns a kubeadm command for certificate operations.
-// In unprivileged mode, it fetches the kubeadm ClusterConfiguration from the
-// kubeadm-config ConfigMap and appends --config so kubeadm can check and
-// renew certificates without connecting to the API server.
+// It fetches the kubeadm ClusterConfiguration from the kubeadm-config ConfigMap
+// and appends --config so kubeadm can check and renew certificates without
+// connecting to the API server.
 func newKubeadmCertsCmd(arg ...string) *exec.Cmd {
-	if host.IsUnprivileged() {
-		if cfgPath, err := fetchAndWriteKubeadmConfig(); err == nil {
-			return host.NewCommandWithStdout("/usr/bin/kubeadm", append(arg, "--config", cfgPath)...)
-		} else {
-			logrus.Errorf("Could not fetch kubeadm cluster config: %v", err)
-		}
-		return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
+	if cfgPath, err := fetchAndWriteKubeadmConfig(); err == nil {
+		return host.NewCommandWithStdout("/usr/bin/kubeadm", append(arg, "--config", cfgPath)...)
+	} else {
+		logrus.Errorf("Could not fetch kubeadm cluster config: %v", err)
 	}
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	return host.NewCommandWithStdout("/usr/bin/nsenter", append([]string{"-m/proc/1/ns/mnt", "/usr/bin/kubeadm"}, arg...)...)
+	return host.NewCommandWithStdout("/usr/bin/kubeadm", arg...)
 }
 
 // kubeadmAlphaCertsCheckExpiration executes `kubeadm alpha certs check-expiration`

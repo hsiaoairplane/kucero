@@ -17,19 +17,10 @@ limitations under the License.
 package host
 
 import (
-	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 )
-
-// IsUnprivileged returns true when the KUCERO_UNPRIVILEGED environment
-// variable is set to "true", indicating that the container is running
-// without privileged mode and nsenter should not be used.
-func IsUnprivileged() bool {
-	return strings.EqualFold(os.Getenv("KUCERO_UNPRIVILEGED"), "true")
-}
 
 // NewCommand creates a new Command with stdout/stderr wired to our standard logger
 func NewCommand(name string, arg ...string) *exec.Cmd {

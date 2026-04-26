@@ -30,7 +30,6 @@ import (
 	"github.com/jenting/kucero/pkg/pki/cert"
 	"github.com/jenting/kucero/pkg/pki/clock"
 )
-
 var certificates map[string]string = map[string]string{
 	"admin.conf":               "/etc/kubernetes/admin.conf",
 	"controller-manager.conf":  "/etc/kubernetes/controller-manager.conf",
@@ -108,20 +107,7 @@ func backupCertificate(nodeName string, certificateName, certificatePath string)
 	ext := filepath.Ext(certificatePath)
 	certificateBackupPath := filepath.Join(dir, strings.TrimSuffix(base, ext)+"-"+time.Now().Format("20060102030405")+ext+".bak")
 
-	if host.IsUnprivileged() {
-		// In unprivileged mode, use Go native file copy instead of nsenter+cp.
-		// The certificate paths are accessible directly via host volume mounts.
-		return copyFile(certificatePath, certificateBackupPath)
-	}
-
-	// Relies on hostPID:true and privileged:true to enter host mount space
-	cmd := host.NewCommand("/usr/bin/nsenter", "-m/proc/1/ns/mnt", "/usr/bin/cp", certificatePath, certificateBackupPath)
-	err := cmd.Run()
-	if err != nil {
-		logrus.Errorf("Error invoking %s: %v", cmd.Args, err)
-	}
-
-	return err
+	return copyFile(certificatePath, certificateBackupPath)
 }
 
 // copyFile copies the file at src to dst using Go standard library I/O.
