@@ -20,6 +20,23 @@ By default, kucero enables kubelet client `rotateCertificates: true` and server 
 - `--enable-kubelet-client-cert-rotation=false`
 - `--enable-kubelet-server-cert-rotation=false`
 
+## CA Certificate Rotation
+
+By default, CA certificate rotation is **disabled** because it is a disruptive operation. When a CA certificate is rotated, all leaf certificates signed by that CA are also automatically renewed. The affected CA certificates and their dependent leaf certificates are:
+
+| CA certificate | Dependent leaf certificates |
+|---|---|
+| `ca` | `apiserver`, `apiserver-kubelet-client` |
+| `etcd-ca` | `apiserver-etcd-client`, `etcd-healthcheck-client`, `etcd-peer`, `etcd-server` |
+| `front-proxy-ca` | `front-proxy-client` |
+
+Before rotating a CA, kucero backs up both the `.crt` and `.key` files so the previous CA can be restored if needed.
+
+To enable CA certificate rotation, pass the flag to kucero:
+- `--enable-ca-cert-rotation=true`
+
+> **Warning**: CA rotation replaces the CA key pair. All components that trust the old CA (kubelets, external clients, etc.) must be updated to trust the new CA. Review the [Kubernetes manual CA rotation documentation](https://kubernetes.io/docs/tasks/tls/manual-rotation-of-ca-certificates/) before enabling this feature.
+
 ## Build Requirements
 
 - Golang >= 1.17
