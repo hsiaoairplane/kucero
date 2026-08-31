@@ -58,6 +58,7 @@ var (
 	caCertPath, caKeyPath                       string
 	enableKubeletClientCertRotation             bool
 	enableKubeletServerCertRotation             bool
+	enableCACertRotation                        bool
 
 	scheme = runtime.NewScheme()
 )
@@ -111,6 +112,8 @@ func main() {
 		"Enable kubelet client cert rotation")
 	rootCmd.PersistentFlags().BoolVar(&enableKubeletServerCertRotation, "enable-kubelet-server-cert-rotation", true,
 		"Enable kubelet server cert rotation")
+	rootCmd.PersistentFlags().BoolVar(&enableCACertRotation, "enable-ca-cert-rotation", false,
+		"Enable CA certificate rotation (rotates CA certificates and all leaf certificates they sign)")
 
 	if err := rootCmd.Execute(); err != nil {
 		logrus.Error(err)
@@ -156,6 +159,7 @@ func root(cmd *cobra.Command, args []string) {
 	logrus.Infof("Rotates Certificate If Expiry Time Less Than %v", expiryTimeToRotate)
 	logrus.Infof("Kubelet client cert rotation enabled: %t", enableKubeletClientCertRotation)
 	logrus.Infof("Kubelet server cert rotation enabled: %t", enableKubeletServerCertRotation)
+	logrus.Infof("CA cert rotation enabled: %t", enableCACertRotation)
 	if enableKubeletCSRController && isControlPlaneNode {
 		logrus.Infof("Kubelet CSR controller leader election ID: %s", leaderElectionID)
 		logrus.Infof("Kubelet CSR controller CA cert: %s", caCertPath)
@@ -173,7 +177,7 @@ type nodeMeta struct {
 
 func rotateCertificateWhenNeeded(corev1Node *corev1.Node, isControlPlaneNode bool, client *kubernetes.Clientset) {
 	nodeName := corev1Node.GetName()
-	certNode := node.New(isControlPlaneNode, nodeName, expiryTimeToRotate, enableKubeletClientCertRotation, enableKubeletServerCertRotation)
+	certNode := node.New(isControlPlaneNode, nodeName, expiryTimeToRotate, enableKubeletClientCertRotation, enableKubeletServerCertRotation, enableCACertRotation)
 
 	lock := daemonsetlock.New(client, nodeName, dsNamespace, dsName, lockAnnotation)
 	nodeMeta := nodeMeta{}
