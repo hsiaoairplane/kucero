@@ -26,9 +26,9 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/jenting/kucero/pkg/host"
-	"github.com/jenting/kucero/pkg/pki/cert"
-	"github.com/jenting/kucero/pkg/pki/clock"
+	"github.com/hsiaoairplane/kucero/pkg/host"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert"
+	"github.com/hsiaoairplane/kucero/pkg/pki/clock"
 )
 var certificates map[string]string = map[string]string{
 	"admin.conf":               "/etc/kubernetes/admin.conf",

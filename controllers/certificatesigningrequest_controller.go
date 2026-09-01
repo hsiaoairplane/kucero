@@ -34,8 +34,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/jenting/kucero/pkg/pki/cert"
-	"github.com/jenting/kucero/pkg/pki/signer"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert"
+	"github.com/hsiaoairplane/kucero/pkg/pki/signer"
 )
 
 // CertificateSigningRequestSigningReconciler reconciles a CertificateSigningRequest object

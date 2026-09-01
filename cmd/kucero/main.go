@@ -38,10 +38,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/weaveworks/kured/pkg/daemonsetlock"
 
-	"github.com/jenting/kucero/controllers"
-	"github.com/jenting/kucero/pkg/host"
-	"github.com/jenting/kucero/pkg/pki/node"
-	"github.com/jenting/kucero/pkg/pki/signer"
+	"github.com/hsiaoairplane/kucero/controllers"
+	"github.com/hsiaoairplane/kucero/pkg/host"
+	"github.com/hsiaoairplane/kucero/pkg/pki/node"
+	"github.com/hsiaoairplane/kucero/pkg/pki/signer"
 	//+kubebuilder:scaffold:imports
 )
 

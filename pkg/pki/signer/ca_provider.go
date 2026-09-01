@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/keyutil"
 
-	"github.com/jenting/kucero/pkg/pki/authority"
+	"github.com/hsiaoairplane/kucero/pkg/pki/authority"
 )
 
 func newCAProvider(caFile, caKeyFile string) (*caProvider, error) {

@@ -21,8 +21,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/jenting/kucero/pkg/host"
-	"github.com/jenting/kucero/pkg/pki/conf"
+	"github.com/hsiaoairplane/kucero/pkg/host"
+	"github.com/hsiaoairplane/kucero/pkg/pki/conf"
 )
 
 type Kubelet struct {
