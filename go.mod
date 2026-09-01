@@ -1,4 +1,4 @@
-module github.com/jenting/kucero
+module github.com/hsiaoairplane/kucero
 
 go 1.26.0
 

@@ -19,7 +19,7 @@ package null
 import (
 	"time"
 
-	"github.com/jenting/kucero/pkg/pki/cert"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert"
 )
 
 type Null struct {

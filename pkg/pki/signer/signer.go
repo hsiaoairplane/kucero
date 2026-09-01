@@ -25,7 +25,7 @@ import (
 	capi "k8s.io/api/certificates/v1"
 	"k8s.io/client-go/util/certificate/csr"
 
-	"github.com/jenting/kucero/pkg/pki/authority"
+	"github.com/hsiaoairplane/kucero/pkg/pki/authority"
 )
 
 type Signer struct {

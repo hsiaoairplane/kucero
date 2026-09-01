@@ -19,11 +19,11 @@ package node
 import (
 	"time"
 
-	"github.com/jenting/kucero/pkg/pki/cert"
-	"github.com/jenting/kucero/pkg/pki/cert/kubeadm"
-	"github.com/jenting/kucero/pkg/pki/cert/null"
-	"github.com/jenting/kucero/pkg/pki/conf"
-	"github.com/jenting/kucero/pkg/pki/conf/kubelet"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert/kubeadm"
+	"github.com/hsiaoairplane/kucero/pkg/pki/cert/null"
+	"github.com/hsiaoairplane/kucero/pkg/pki/conf"
+	"github.com/hsiaoairplane/kucero/pkg/pki/conf/kubelet"
 )
 
 type Node struct {

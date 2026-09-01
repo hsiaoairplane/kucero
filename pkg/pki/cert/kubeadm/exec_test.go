@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jenting/kucero/pkg/pki/clock"
+	"github.com/hsiaoairplane/kucero/pkg/pki/clock"
 )
 
 func Test_parseKubeadmCertsCheckExpiration(t *testing.T) {
