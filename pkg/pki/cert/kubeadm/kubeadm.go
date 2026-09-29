@@ -43,18 +43,46 @@ var certificates map[string]string = map[string]string{
 	"etcd-server":              "/etc/kubernetes/pki/etcd/server.crt",
 }
 
+// caCertificates maps CA certificate names to their .crt file paths.
+var caCertificates map[string]string = map[string]string{
+	"ca":             "/etc/kubernetes/pki/ca.crt",
+	"etcd-ca":        "/etc/kubernetes/pki/etcd/ca.crt",
+	"front-proxy-ca": "/etc/kubernetes/pki/front-proxy-ca.crt",
+}
+
+// caSignedCertificates maps each CA name to the leaf certificates it signs.
+// When a CA is rotated its signed leaf certificates must also be renewed so
+// that they are issued by the new CA.
+var caSignedCertificates map[string][]string = map[string][]string{
+	"ca": {
+		"apiserver",
+		"apiserver-kubelet-client",
+	},
+	"etcd-ca": {
+		"apiserver-etcd-client",
+		"etcd-healthcheck-client",
+		"etcd-peer",
+		"etcd-server",
+	},
+	"front-proxy-ca": {
+		"front-proxy-client",
+	},
+}
+
 type Kubeadm struct {
-	nodeName           string
-	expiryTimeToRotate time.Duration
-	clock              clock.Clock
+	nodeName              string
+	expiryTimeToRotate    time.Duration
+	clock                 clock.Clock
+	enableCACertRotation  bool
 }
 
 // New returns the kubeadm instance
-func New(nodeName string, expiryTimeToRotate time.Duration) cert.Certificate {
+func New(nodeName string, expiryTimeToRotate time.Duration, enableCACertRotation bool) cert.Certificate {
 	return &Kubeadm{
-		nodeName:           nodeName,
-		expiryTimeToRotate: expiryTimeToRotate,
-		clock:              clock.NewRealClock(),
+		nodeName:             nodeName,
+		expiryTimeToRotate:   expiryTimeToRotate,
+		clock:                clock.NewRealClock(),
+		enableCACertRotation: enableCACertRotation,
 	}
 }
 
@@ -67,12 +95,67 @@ func (k *Kubeadm) CheckExpiration() ([]string, error) {
 }
 
 // Rotate executes the steps to rotates the certificate
-// including backing up certificate, rotates certificate, and restart kubelet
+// including backing up certificate, rotates certificate, and restart kubelet.
+// When CA certificate rotation is enabled and a CA certificate is expiring,
+// the CA and all leaf certificates it signs are rotated together.
 func (k *Kubeadm) Rotate(expiryCertificates []string) error {
 	var errs error
+
+	// Track leaf certificates that have already been rotated as a side-effect
+	// of CA rotation so we don't rotate them twice.
+	rotatedLeafs := make(map[string]bool)
+
 	for _, certificateName := range expiryCertificates {
+		// Handle CA certificate rotation.
+		if caCertPath, isCA := caCertificates[certificateName]; isCA {
+			if !k.enableCACertRotation {
+				logrus.Infof("Skipping CA certificate %s rotation (--enable-ca-cert-rotation is false)", certificateName)
+				continue
+			}
+
+			if err := backupCACertificate(k.nodeName, certificateName, caCertPath); err != nil {
+				errs = fmt.Errorf("%w; ", err)
+				continue
+			}
+
+			if err := rotateCertificate(k.nodeName, certificateName, caCertPath); err != nil {
+				errs = fmt.Errorf("%w; ", err)
+				continue
+			}
+
+			// Rotate all leaf certificates signed by this CA.
+			for _, leafName := range caSignedCertificates[certificateName] {
+				if rotatedLeafs[leafName] {
+					continue
+				}
+				leafPath, ok := certificates[leafName]
+				if !ok {
+					continue
+				}
+
+				if err := backupCertificate(k.nodeName, leafName, leafPath); err != nil {
+					errs = fmt.Errorf("%w; ", err)
+					continue
+				}
+
+				if err := rotateCertificate(k.nodeName, leafName, leafPath); err != nil {
+					errs = fmt.Errorf("%w; ", err)
+					continue
+				}
+
+				rotatedLeafs[leafName] = true
+			}
+			continue
+		}
+
+		// Handle regular (leaf) certificate rotation.
 		certificatePath, ok := certificates[certificateName]
 		if !ok {
+			continue
+		}
+
+		if rotatedLeafs[certificateName] {
+			// Already rotated as a dependency of a CA rotation.
 			continue
 		}
 
@@ -105,9 +188,33 @@ func backupCertificate(nodeName string, certificateName, certificatePath string)
 	dir := filepath.Dir(certificatePath)
 	base := filepath.Base(certificatePath)
 	ext := filepath.Ext(certificatePath)
-	certificateBackupPath := filepath.Join(dir, strings.TrimSuffix(base, ext)+"-"+time.Now().Format("20060102030405")+ext+".bak")
+	certificateBackupPath := filepath.Join(dir, strings.TrimSuffix(base, ext)+"-"+time.Now().Format("20060102150405")+ext+".bak")
 
 	return copyFile(certificatePath, certificateBackupPath)
+}
+
+// backupCACertificate backups both the CA certificate (.crt) and private key
+// (.key) files so that the CA can be restored if rotation fails.
+func backupCACertificate(nodeName string, certificateName, certificatePath string) error {
+	logrus.Infof("Commanding backup %s node CA certificate %s path %s", nodeName, certificateName, certificatePath)
+
+	timestamp := time.Now().Format("20060102150405")
+
+	// Backup the certificate file.
+	dir := filepath.Dir(certificatePath)
+	base := filepath.Base(certificatePath)
+	ext := filepath.Ext(certificatePath)
+	certBackupPath := filepath.Join(dir, strings.TrimSuffix(base, ext)+"-"+timestamp+ext+".bak")
+	if err := copyFile(certificatePath, certBackupPath); err != nil {
+		return err
+	}
+
+	// Backup the private key file (same path, but .key extension).
+	keyPath := strings.TrimSuffix(certificatePath, ext) + ".key"
+	keyBase := filepath.Base(keyPath)
+	keyExt := filepath.Ext(keyPath)
+	keyBackupPath := filepath.Join(dir, strings.TrimSuffix(keyBase, keyExt)+"-"+timestamp+keyExt+".bak")
+	return copyFile(keyPath, keyBackupPath)
 }
 
 // copyFile copies the file at src to dst using Go standard library I/O.
