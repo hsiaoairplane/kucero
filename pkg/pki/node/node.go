@@ -33,11 +33,11 @@ type Node struct {
 
 // New checks if it's a control plane node or worker node
 // then returns the corresponding node interface
-func New(isControlPlane bool, name string, expiryTimeToRotate time.Duration, enableKubeletClientCertRotation, enableKubeletServerCertRotation bool) *Node {
+func New(isControlPlane bool, name string, expiryTimeToRotate time.Duration, enableKubeletClientCertRotation, enableKubeletServerCertRotation, enableCACertRotation bool) *Node {
 	if isControlPlane {
 		return &Node{
 			Config:      kubelet.New(name, enableKubeletClientCertRotation, enableKubeletServerCertRotation),
-			Certificate: kubeadm.New(name, expiryTimeToRotate),
+			Certificate: kubeadm.New(name, expiryTimeToRotate, enableCACertRotation),
 		}
 	}
 	return &Node{
